@@ -1,0 +1,85 @@
+name: Build tagged desktop releases
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            platform: windows-x64
+            archive: zip
+          - runner: ubuntu-latest
+            platform: linux-x64
+            archive: tar.gz
+          - runner: macos-latest
+            platform: macos-arm64
+            archive: zip
+          - runner: macos-15-intel
+            platform: macos-x64
+            archive: zip
+    runs-on: ${{ matrix.runner }}
+    env:
+      CMAKE_ARGS: -DGGML_NATIVE=OFF
+      CMAKE_BUILD_PARALLEL_LEVEL: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+      - name: Install desktop dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r desktop-requirements.txt
+      - name: Build standalone executable
+        run: pyinstaller --noconfirm --clean FontFinder.spec
+      - name: Archive Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/FontFinder.exe -DestinationPath FontFinder-${{ matrix.platform }}.zip
+      - name: Archive macOS app bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: ditto -c -k --sequesterRsrc --keepParent dist/FontFinder.app FontFinder-${{ matrix.platform }}.zip
+      - name: Archive Linux executable
+        if: runner.os == 'Linux'
+        shell: bash
+        run: tar -czf FontFinder-${{ matrix.platform }}.tar.gz -C dist FontFinder
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: FontFinder-${{ matrix.platform }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    name: Publish tagged release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: FontFinder ${{ github.ref_name }}
+          generate_release_notes: true
+          files: release-assets/*
+          fail_on_unmatched_files: true
